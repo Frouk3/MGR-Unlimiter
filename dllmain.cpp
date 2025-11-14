@@ -21,7 +21,7 @@ CREATE_THISCALL(false, shared::base + 0x9D4130, int, Hw_cHeapPhysical_create, Hw
 {
 	auto result = oHw_cHeapPhysical_create(pThis, size, heap, target);
 
-	pThis->m_pReservedHeap = heap;
+	pThis->m_pSubHeap = heap;
 
 	return result;
 }
@@ -30,7 +30,7 @@ CREATE_THISCALL(false, shared::base + 0x9D39D0, int, Hw_cHeapVariable_create, Hw
 {
 	auto result = oHw_cHeapVariable_create(pThis, size * 5, heap, target);
 
-	pThis->m_pReservedHeap = heap;
+	pThis->m_pSubHeap = heap;
 
 	return result;
 }
@@ -39,26 +39,23 @@ CREATE_THISCALL(false, shared::base + 0x9D2AB0, int, Hw_cHeapFixed_create, Hw::c
 {
 	auto result = oHw_cHeapFixed_create(pThis, size, allocSize, preserved, heap, target);
 
-	pThis->m_pReservedHeap = heap;
+	pThis->m_pSubHeap = heap;
 
 	return result;
 }
 
-CREATE_THISCALL(false, shared::base + 0x9D4290, void*, Hw_cHeapPhysicalBaseAllocate, Hw::cHeapPhysicalBase*, size_t size, size_t preserved, int alignment, int a5)
+CREATE_THISCALL(false, shared::base + 0x9D4290, void*, Hw_cHeapPhysicalBaseAllocate, Hw::cHeapPhysicalBase*, size_t size, size_t align, Hw::HW_ALLOC_MODE mode, int a5)
 {
-	size_t alignedReserved = (preserved + 3u) & ~3u;
-	size_t alignedSize = (size + 3u) & ~3u;
-
-	if (alignment == 1 || alignment == 2)
+	if (mode == Hw::HW_ALLOC_PHYSICAL || mode == Hw::HW_ALLOC_PHYSICAL_BACK)
 	{
-		if (alignedReserved != 0x1000)
-			PrintfLog("[cHeapPhysicalBase] Invalid memory acquisition mode (%d,%d)", alignedReserved, alignment);
+		if (align != 0x1000)
+			Hw::cDebugLog::addMess("[cHeapPhysicalBase] Invalid memory acquisition mode (%d,%d)", (size + 3u) & ~3u, align);
 	}
 
-	void* heap = pThis->m_pHeapOwner->allocate(size, preserved, alignment, a5);
+	void* heap = pThis->m_pParentHeap->allocImpl(size, align, mode, a5);
 
 	if (!heap)
-		PrintfLog("[cHeapPhysicalBase] Failed to allocate heap[need: %d, available: %d]", alignedSize, alignedSize - pThis->m_pHeapOwner->getFreeMemory());
+		Hw::cDebugLog::addMess("[cHeapPhysicalBase] Failed to allocate heap[need: %d, available: %d]", (size + 3u) & ~3u, (size + 3u) & ~3u, pThis->m_pParentHeap->getAllocatableSize());
 
 	return heap;
 }
@@ -66,7 +63,7 @@ CREATE_THISCALL(false, shared::base + 0x9D4290, void*, Hw_cHeapPhysicalBaseAlloc
 #if DEBUG_HEAP_USAGE
 tagPOINT& res = *(tagPOINT*)(shared::base + 0x14CE9A4);
 
-void VAddTextA(const cVec2 &pos, bool bShadow, float shadowOffset, const char *fmt, va_list va)
+void VAddTextA(const Hw::cVec2 &pos, bool bShadow, float shadowOffset, const char *fmt, va_list va)
 {
 	int size = vsnprintf(nullptr, 0, fmt, va);
 
@@ -98,7 +95,7 @@ void VAddTextA(const cVec2 &pos, bool bShadow, float shadowOffset, const char *f
 	font->DrawTextA(nullptr, buffer, -1, &rect, DT_NOCLIP, -1);
 }
 
-void AddTextA(const cVec2& pos, bool bShadow, float shadowOffset, const char* fmt, ...)
+void AddTextA(const Hw::cVec2& pos, bool bShadow, float shadowOffset, const char* fmt, ...)
 {
 	va_list va;
 	va_start(va, fmt);
@@ -130,7 +127,7 @@ public:
 #if DEBUG_HEAP_USAGE
 		Events::OnApplicationStartEvent.after += []()
 			{
-				if (SUCCEEDED(D3DXCreateFontA(Hw::GraphicDevice, 17, 0, FW_BOLD, 0, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, DEFAULT_QUALITY, FF_DONTCARE | DEFAULT_PITCH, "Segoe UI", &font)))
+				if (SUCCEEDED(D3DXCreateFontA(Hw::GraphicDevice::m_pDevice, 17, 0, FW_BOLD, 0, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, DEFAULT_QUALITY, FF_DONTCARE | DEFAULT_PITCH, "Segoe UI", &font)))
 					bCanRender = true;
 			};
 
@@ -139,7 +136,7 @@ public:
 				if (!bCanRender)
 					return;
 
-				if (shared::IsKeyPressed(VK_F5, false))
+				if (g_Keyboard.trig(Hw::KB_F5))
 					bShowMemoryStatistics ^= true;
 
 				if (bShowMemoryStatistics)
@@ -180,7 +177,7 @@ public:
 
 					size_t overallUsed = 0;
 					size_t sizeLimit = 0;
-					size_t freeMemory = 0;
+					size_t allocatable = 0;
 
 					float textOffset = 30.f;
 
@@ -191,18 +188,21 @@ public:
 
 					for (Hw::cHeap* heap = gHeap->m_pPrev; heap; heap = heap->m_pNext)
 					{
-						overallUsed += heap->getUsedMemory();
-						sizeLimit += heap->getMemoryLimit();
-						freeMemory += heap->getFreeMemory();
+						if (heap == gHeap)
+							continue;
 
-						AddTextA({ 15.f, textOffset }, true, 1.f, "%s [%s/%s] <- %s", heap->m_TargetAlloc, getProperSize(heap->getUsedMemory()).c_str(), getProperSize(heap->getMemoryLimit()).c_str(), heap->m_pHeapOwner->m_TargetAlloc);
+						overallUsed += heap->getUsedSize();
+						sizeLimit += heap->getSize();
+						allocatable += heap->getAllocatableSize();
+
+						AddTextA({ 15.f, textOffset }, true, 1.f, "%s [%s/%s] <- %s", heap->m_pHeapName, getProperSize(heap->getUsedSize()).c_str(), getProperSize(heap->getSize()).c_str(), heap->m_pParentHeap->m_pHeapName);
 
 						textOffset += 15.f;
 					}
 
-					AddTextA({ 15.f, 15.f }, true, 1.f, "%s: [%s/%s]", gHeap->m_TargetAlloc, getProperSize(gHeap->getUsedMemory()).c_str(), getProperSize(gHeap->getMemoryLimit()).c_str());
+					AddTextA({ 15.f, 15.f }, true, 1.f, "%s: [%s/%s]", gHeap->m_pHeapName, getProperSize(gHeap->getUsedSize()).c_str(), getProperSize(gHeap->getAllocatableSize()).c_str());
 
-					AddTextA({ 15.f, textOffset }, true, 1.f, "TOTAL: [%s/%s] -> %.2f%% out of %s", getProperSize(overallUsed + gHeap->getUsedMemory()).c_str(), getProperSize(sizeLimit).c_str(), (((float)overallUsed + (float)gHeap->getUsedMemory()) / (float)gHeap->getMemoryLimit()) * 100.f, getProperSize(gHeap->getMemoryLimit()).c_str());
+					AddTextA({ 15.f, textOffset }, true, 1.f, "TOTAL: [%s/%s] -> %.2f%% out of %s", getProperSize(allocatable + gHeap->getAllocatableSize()).c_str(), getProperSize(sizeLimit + gHeap->getSize()).c_str(), float(allocatable + gHeap->getAllocatableSize()) / gHeap->getSize() * 100.f, getProperSize(gHeap->getSize()).c_str());
 				}
 			};
 
