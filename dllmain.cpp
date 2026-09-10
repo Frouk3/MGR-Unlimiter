@@ -4,10 +4,11 @@
 #include <common.h>
 #include <string>
 #include <shared.h>
+#include <HwDvd.h>
 
 // Just in case, make every heap having global as reserved
 
-#define DEBUG_HEAP_USAGE 1
+#define DEBUG_HEAP_USAGE 0
 
 #if DEBUG_HEAP_USAGE
 LPD3DXFONT font;
@@ -19,7 +20,7 @@ bool bShowMemoryStatistics = false;
 
 CREATE_THISCALL(false, shared::base + 0x9D4130, int, Hw_cHeapPhysical_create, Hw::cHeapPhysical*, unsigned int size, Hw::cHeap* heap, const char* target)
 {
-	auto result = oHw_cHeapPhysical_create(pThis, size, heap, target);
+	auto result = original(pThis, size, heap, target);
 
 	pThis->m_pSubHeap = heap;
 
@@ -28,7 +29,7 @@ CREATE_THISCALL(false, shared::base + 0x9D4130, int, Hw_cHeapPhysical_create, Hw
 
 CREATE_THISCALL(false, shared::base + 0x9D39D0, int, Hw_cHeapVariable_create, Hw::cHeapVariable*, unsigned int size, Hw::cHeap* heap, const char* target)
 {
-	auto result = oHw_cHeapVariable_create(pThis, size * 5, heap, target);
+	auto result = original(pThis, size * 5, heap, target);
 
 	pThis->m_pSubHeap = heap;
 
@@ -37,7 +38,7 @@ CREATE_THISCALL(false, shared::base + 0x9D39D0, int, Hw_cHeapVariable_create, Hw
 
 CREATE_THISCALL(false, shared::base + 0x9D2AB0, int, Hw_cHeapFixed_create, Hw::cHeapFixed*, unsigned int size, unsigned int allocSize, unsigned int preserved, Hw::cHeap* heap, const char* target)
 {
-	auto result = oHw_cHeapFixed_create(pThis, size, allocSize, preserved, heap, target);
+	auto result = original(pThis, size, allocSize, preserved, heap, target);
 
 	pThis->m_pSubHeap = heap;
 
@@ -49,13 +50,13 @@ CREATE_THISCALL(false, shared::base + 0x9D4290, void*, Hw_cHeapPhysicalBaseAlloc
 	if (mode == Hw::HW_ALLOC_PHYSICAL || mode == Hw::HW_ALLOC_PHYSICAL_BACK)
 	{
 		if (align != 0x1000)
-			Hw::cDebugLog::addMess("[cHeapPhysicalBase] Invalid memory acquisition mode (%d,%d)", (size + 3u) & ~3u, align);
+			Hw::DebugSystem::Report("[cHeapPhysicalBase] Invalid memory acquisition mode (%d,%d)", (size + 3u) & ~3u, align);
 	}
 
 	void* heap = pThis->m_pParentHeap->allocImpl(size, align, mode, a5);
 
 	if (!heap)
-		Hw::cDebugLog::addMess("[cHeapPhysicalBase] Failed to allocate heap[need: %d, available: %d]", (size + 3u) & ~3u, (size + 3u) & ~3u, pThis->m_pParentHeap->getAllocatableSize());
+		Hw::DebugSystem::Report("[cHeapPhysicalBase] Failed to allocate heap[need: %d, available: %d]", (size + 3u) & ~3u, (size + 3u) & ~3u, pThis->m_pParentHeap->getAllocatableSize());
 
 	return heap;
 }
@@ -106,13 +107,196 @@ void AddTextA(const Hw::cVec2& pos, bool bShadow, float shadowOffset, const char
 }
 #endif
 
+int isPathMatch(
+	const char* pCurrentPath,
+	const char* pTargetPath,
+	const char** ppDirExclude,
+	int dirExcludeNum)
+{
+	unsigned int v8;
+	int v9;
+	const char* v10;
+	signed int v11;
+	int v12;
+	int v13;
+	char v14;
+	bool v15;
+	char v16;
+	char v17;
+	const char* a1a;
+	const char* a2a;
+
+	if (!pCurrentPath || !ppDirExclude || !dirExcludeNum)
+		return 0;
+
+	v8 = strlen(pTargetPath);
+	a2a = (const char*)strlen(pCurrentPath);
+	v9 = 0;
+	a1a = (const char*)(v8 - 1);
+
+	while (1)
+	{
+		v10 = ppDirExclude[v9];
+		v11 = strlen(v10) - 1;
+		v12 = (int)a1a;
+
+		if ((int)a1a <= v11)
+		{
+			if ((int)a1a < 0)
+				break;
+			while (v10[v11] == pTargetPath[v12])
+			{
+				--v11;
+				if (--v12 < 0)
+					goto LABEL_12;
+			}
+			if (v12 < 0)
+				break;
+		}
+	LABEL_26:
+		if (++v9 >= (unsigned int)dirExcludeNum)
+			return 0;
+	}
+
+LABEL_12:
+	v13 = (int)(a2a - 1);
+	if (v11 > (int)(a2a - 1))
+		goto LABEL_26;
+
+	if (v11 >= 0)
+	{
+		while (1)
+		{
+			v14 = v10[v11];
+			if (v14 != '\\' && v14 != '/')
+				break;
+			v16 = pCurrentPath[v13];
+			if (v16 != '\\')
+			{
+				v15 = v16 == '/';
+			LABEL_19:
+				if (!v15)
+					goto LABEL_26;
+			}
+			--v13;
+			if (--v11 < 0)
+				goto LABEL_23;
+		}
+		v15 = v14 == pCurrentPath[v13];
+		goto LABEL_19;
+	}
+
+LABEL_23:
+	if (v13 < 0)
+		return 1;
+
+	v17 = pCurrentPath[v13];
+	if (v17 != '\\' && v17 != '/')
+		goto LABEL_26;
+
+	return 1;
+}
+
+CREATE_THISCALL(false, shared::base + 0x9EAB30, int, Hw_cDvdFst_startup, Hw::cDvdFst*, const char* pRootFilePath, const char* pPatchFilePath, Hw::cHeap& rHeap, const char** ppDirExclude, int dirExcludeNum)
+{
+	size_t fileAmount = 0;
+	size_t dirAmount = 0;
+	size_t nameBufferSz = 0;
+
+	auto processFd = [&](const char* path, const char* dirName, auto&& processFd) -> bool
+	{
+		char* pathBuffer = new char[260]; // it's better to operate on RAM rather than stack, because of the recursion
+
+		if (dirName)
+		{
+			strcpy_s(pathBuffer, 260, path);
+			if (pathBuffer[strlen(pathBuffer) - 1] != '\\')
+				strcat_s(pathBuffer, 260, "\\");
+
+			strcat_s(pathBuffer, 260, dirName);
+			if (pathBuffer[strlen(pathBuffer) - 1] != '\\')
+				strcat_s(pathBuffer, 260, "\\");
+		}
+		else
+		{
+			strcpy_s(pathBuffer, 260, path);
+		}
+
+		Hw::cDvdFileFind fd;
+		if (!fd.startup(pathBuffer))
+		{
+			delete[] pathBuffer;
+			return false;
+		}
+
+		for (; fd.isValid(); fd.setNext())
+		{
+			if (fd.isName(".") || fd.isName("..") || fd.isName(".svn"))
+				continue;
+
+			if (fd.isDirectory())
+			{
+				if (!isPathMatch(pathBuffer, fd.refName(), ppDirExclude, dirExcludeNum))
+				{
+					dirAmount++;
+					processFd(pathBuffer, fd.refName(), processFd);
+
+					char* newPathBuffer = new char[260];
+					strcpy_s(newPathBuffer, 260, fd.refName());
+					if (newPathBuffer[strlen(newPathBuffer) - 1] != '\\')
+						strcat_s(newPathBuffer, 260, "\\");
+
+					nameBufferSz += strlen(newPathBuffer) + 1;
+					delete[] newPathBuffer;
+				}
+			}
+			else if (fd.isFile() && fd.getSize()) // ignore empty files, same as game does
+			{
+				fileAmount++;
+				nameBufferSz += strlen(fd.refName()) + 1;
+			}
+		}
+
+		fd.cleanup();
+
+		delete[] pathBuffer;
+
+		return true;
+	};
+
+	nameBufferSz += strlen(pRootFilePath) + 1;
+
+	if (processFd(pRootFilePath, "", processFd))
+	{
+		pThis->m_RootBuffer.m_DirBufferSize = dirAmount;
+		pThis->m_RootBuffer.m_FileBufferSize = fileAmount;
+		pThis->m_RootBuffer.m_NameBufferSize = nameBufferSz;
+	}
+
+	if (pPatchFilePath)
+	{
+		fileAmount = 0;
+		dirAmount = 0;
+		nameBufferSz = 0;
+
+		nameBufferSz += strlen(pPatchFilePath) + 1;
+
+		if (processFd(pPatchFilePath, "", processFd))
+		{
+			pThis->m_PatchBuffer.m_DirBufferSize = dirAmount;
+			pThis->m_PatchBuffer.m_FileBufferSize = fileAmount;
+			pThis->m_PatchBuffer.m_NameBufferSize = nameBufferSz;
+		}
+	}
+
+	return original(pThis, pRootFilePath, pPatchFilePath, rHeap, ppDirExclude, dirExcludeNum);
+}
+
 class Plugin
 {
 public:
 	Plugin()
 	{
-		MH_Initialize();
-
 		// injector::MakeNOP(shared::base + 0x9D437E, 3, true); // m_nTotalSize -= size;
 		// injector::MakeNOP(shared::base + 0x9D4393, 3, true); // m_nTotalSize -= size;
 		// injector::MakeNOP(shared::base + 0x9D43AD, 3, true); // m_nFreeMemory -= size;

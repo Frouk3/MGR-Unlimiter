@@ -153,6 +153,8 @@
     <ClInclude Include="framework.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\SDK\mgr-plugin-sdk\SafeHook\hde\hde32.c" />
+    <ClCompile Include="..\..\SDK\mgr-plugin-sdk\SafeHook\hde\hde64.c" />
     <ClCompile Include="dllmain.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
